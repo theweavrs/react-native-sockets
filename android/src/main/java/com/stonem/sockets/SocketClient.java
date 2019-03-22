@@ -165,7 +165,7 @@ event_error = name + event_error;
 
     private boolean connectSocket() {
         try {
-            Log.d(eTag, "Starting new socket: " + dstAddress)
+            Log.d(eTag, "Starting new socket: " + dstAddress);
             InetAddress inetAddress = InetAddress.getByName(dstAddress);
 
             clientSocket = new Socket(inetAddress, dstPort, null, 0);
