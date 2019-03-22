@@ -17,7 +17,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.Socket;
-
+import java.net.InetAddress;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
@@ -157,7 +157,7 @@ timeout = params.getInt("timeout");
 
     private boolean connectSocket() {
         try {
-            InetAddress inetAddress = InetAddress.getByName(server);
+            InetAddress inetAddress = InetAddress.getByName(dstAddress);
 
             clientSocket = new Socket(inetAddress, dstPort, null, 0);
             clientSocket.setSoTimeout(timeout);
