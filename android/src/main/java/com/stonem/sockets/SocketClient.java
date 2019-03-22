@@ -22,6 +22,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.io.OutputStreamWriter;
+import java.io.BufferedWriter;
 
 /**
  * Created by David Stoneham on 2017-08-03.
@@ -48,6 +50,7 @@ public class SocketClient {
     private boolean isFirstConnect = true;
     private BufferedInputStream bufferedInput;
     private boolean readingStream = false;
+    private int timeout = 0;
     private final byte EOT = 0x04;
 
     SocketClient(ReadableMap params, ReactContext reactContext) {
@@ -64,7 +67,9 @@ public class SocketClient {
         if (params.hasKey("reconnectDelay")) {
             reconnectDelay = params.getInt("reconnectDelay");
         }
-
+        if (params.hasKey("timeout")){
+timeout = params.getInt("timeout");
+        }
         Thread socketClientThread = new Thread(new SocketClientThread());
         socketClientThread.start();
     }
@@ -98,10 +103,10 @@ public class SocketClient {
             protected Void doInBackground(String... params) {
                 try {
                     String message = params[0];
-                    OutputStream outputStream = clientSocket.getOutputStream();
-                    PrintStream printStream = new PrintStream(outputStream);
-                    printStream.print(message + (char) EOT);
-                    printStream.flush();
+                    OutputStreamWriter outputStreamWriter = new OutputStreamWriter(clientSocket.getOutputStream());
+                    BufferedWriter bwriter = new BufferedWriter(outputStreamWriter);                    
+                    bwriter.write(message);
+                    bwriter.flush();
                     //debug log
                     Log.d(eTag, "client sent message: " + message);
                 } catch (IOException e) {
@@ -152,7 +157,10 @@ public class SocketClient {
 
     private boolean connectSocket() {
         try {
-            clientSocket = new Socket(dstAddress, dstPort);
+            InetAddress inetAddress = InetAddress.getByName(server);
+
+            clientSocket = new Socket(inetAddress, dstPort, null, 0);
+            clientSocket.setSoTimeout(timeout);
             isOpen = true;
 
             WritableMap eventParams = Arguments.createMap();
@@ -168,30 +176,18 @@ public class SocketClient {
 
     private void watchIncoming() {
         try {
-            String data = "";
-            InputStream inputStream = clientSocket.getInputStream();
-            while (isOpen) {
-                int incomingByte = inputStream.read();
-
-                if (incomingByte == -1) {
+            InputStreamReader inputStreamReader = new InputStreamReader(clientSocket.getInputStream());
+      BufferedReader breader = new BufferedReader(inputStreamReader);
+      String line = null;
+            while ((line = breader.readLine()) != null) {
                     //debug log
-                    Log.v(eTag, "Client disconnected");
-                    isOpen = false;
+                    Log.d(eTag, "client received message: " + line);
                     //emit event
                     WritableMap eventParams = Arguments.createMap();
-                    sendEvent(mReactContext, event_closed, eventParams);
-                } else if (incomingByte == EOT) {
-                    //debug log
-                    Log.d(eTag, "client received message: " + data);
-                    //emit event
-                    WritableMap eventParams = Arguments.createMap();
-                    eventParams.putString("data", data);
+                    eventParams.putString("data", line);
                     sendEvent(mReactContext, event_data, eventParams);
                     //clear incoming
-                    data = "";
-                } else {
-                    data += (char) incomingByte;
-                }
+                    line = "";
             }
         } catch (IOException e) {
             handleIOException(e);
