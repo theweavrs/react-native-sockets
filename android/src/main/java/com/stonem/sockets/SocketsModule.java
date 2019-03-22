@@ -45,7 +45,9 @@ public class SocketsModule extends ReactContextBaseJavaModule {
                 @Override
                 protected void doInBackgroundGuarded(Void... params) {
                     if (!clients.isEmpty()) {
-                        clients.forEach((key,value) -> value.disconnect(false));
+                        for (Map.Entry<String, String> entry : clients.entrySet()) {
+                            entry.getValue().disconnect(false);
+                        }
                     }
                     if (server != null) {
                         server.close();
