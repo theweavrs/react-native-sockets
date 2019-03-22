@@ -20,6 +20,8 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.Enumeration;
 import java.util.concurrent.ExecutionException;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Created by David Stoneham on 2017-08-03.
@@ -30,8 +32,7 @@ public class SocketsModule extends ReactContextBaseJavaModule {
     private ReactContext mReactContext;
 
     SocketServer server;
-    SocketClient client;
-
+    Map<String, SocketClient> clients = new HashMap<String, SocketClient>();
     public SocketsModule(ReactApplicationContext reactContext) {
         super(reactContext);
         mReactContext = reactContext;
@@ -43,8 +44,8 @@ public class SocketsModule extends ReactContextBaseJavaModule {
             new GuardedAsyncTask<Void, Void>(getReactApplicationContext()) {
                 @Override
                 protected void doInBackgroundGuarded(Void... params) {
-                    if (client != null) {
-                        client.disconnect(false);
+                    if (!clients.isEmpty()) {
+                        clients.forEach((key,value) -> value.disconnect(false));
                     }
                     if (server != null) {
                         server.close();
@@ -65,18 +66,21 @@ public class SocketsModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void startClient(ReadableMap params) {
-        client = new SocketClient(params, mReactContext);
+        SocketClient client = new SocketClient(params, mReactContext);
+        clients.put(params.getString("name"), client);
     }
 
     @ReactMethod
-    public void write(String message) {
+    public void write(String id, String message) {
+        SocketClient client = clients.get(id);
         if (client != null) {
             client.write(message);
         }
     }
 
     @ReactMethod
-    public void disconnect() {
+    public void disconnect(String id) {
+        SocketClient client = clients.get(id);
         if (client != null) {
             client.disconnect(true);
             client = null;
