@@ -34,10 +34,10 @@ public class SocketClient {
 
 
     private final String eTag = "REACT-NATIVE-SOCKETS";
-    private final String event_closed = "socketClient_closed";
-    private final String event_data = "socketClient_data";
-    private final String event_error = "socketClient_error";
-    private final String event_connect = "socketClient_connected";
+    private String event_closed = "_closed";
+    private  String event_data = "_data";
+    private  String event_error = "_error";
+    private  String event_connect = "_connected";
     private String dstAddress;
     private int dstPort;
     private ReactContext mReactContext;
@@ -50,6 +50,7 @@ public class SocketClient {
     private boolean isFirstConnect = true;
     private BufferedInputStream bufferedInput;
     private boolean readingStream = false;
+    private String name = "socketClient";
     private int timeout = 0;
     private final byte EOT = 0x04;
 
@@ -70,6 +71,13 @@ public class SocketClient {
         if (params.hasKey("timeout")){
 timeout = params.getInt("timeout");
         }
+        if(params.hasKey("name")){
+            name = params.getString("name");
+        }
+event_closed = name+ event_closed;
+event_connect = name + event_connect;
+event_data = name + event_data;
+event_error = name + event_error;
         Thread socketClientThread = new Thread(new SocketClientThread());
         socketClientThread.start();
     }
@@ -157,6 +165,7 @@ timeout = params.getInt("timeout");
 
     private boolean connectSocket() {
         try {
+            Log.d(eTag, "Starting new socket: " + dstAddress)
             InetAddress inetAddress = InetAddress.getByName(dstAddress);
 
             clientSocket = new Socket(inetAddress, dstPort, null, 0);
