@@ -19,11 +19,16 @@ import java.io.PrintStream;
 import java.net.Socket;
 import java.net.InetAddress;
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.io.OutputStreamWriter;
 import java.io.BufferedWriter;
+import android.util.Base64;
+
+import java.util.Arrays;
+import java.util.StringTokenizer;
 
 /**
  * Created by David Stoneham on 2017-08-03.
@@ -32,12 +37,11 @@ import java.io.BufferedWriter;
 public class SocketClient {
     public Socket clientSocket;
 
-
     private final String eTag = "REACT-NATIVE-SOCKETS";
     private String event_closed = "_closed";
-    private  String event_data = "_data";
-    private  String event_error = "_error";
-    private  String event_connect = "_connected";
+    private String event_data = "_data";
+    private String event_error = "_error";
+    private String event_connect = "_connected";
     private String dstAddress;
     private int dstPort;
     private ReactContext mReactContext;
@@ -51,11 +55,12 @@ public class SocketClient {
     private BufferedInputStream bufferedInput;
     private boolean readingStream = false;
     private String name = "socketClient";
+    private String type = "string";
     private int timeout = 0;
     private final byte EOT = 0x04;
 
     SocketClient(ReadableMap params, ReactContext reactContext) {
-        //String addr, int port, boolean autoReconnect
+        // String addr, int port, boolean autoReconnect
         mReactContext = reactContext;
         dstAddress = params.getString("address");
         dstPort = params.getInt("port");
@@ -68,16 +73,19 @@ public class SocketClient {
         if (params.hasKey("reconnectDelay")) {
             reconnectDelay = params.getInt("reconnectDelay");
         }
-        if (params.hasKey("timeout")){
-timeout = params.getInt("timeout");
+        if (params.hasKey("timeout")) {
+            timeout = params.getInt("timeout");
         }
-        if(params.hasKey("name")){
+        if (params.hasKey("name")) {
             name = params.getString("name");
         }
-event_closed = name+ event_closed;
-event_connect = name + event_connect;
-event_data = name + event_data;
-event_error = name + event_error;
+        if (params.hasKey("type")) {
+            type = params.getString("type");
+        }
+        event_closed = name + event_closed;
+        event_connect = name + event_connect;
+        event_data = name + event_data;
+        event_error = name + event_error;
         Thread socketClientThread = new Thread(new SocketClientThread());
         socketClientThread.start();
     }
@@ -100,7 +108,7 @@ event_error = name + event_error;
         reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit(eventName, params);
     }
 
-    protected void write(String message) {
+    protected void write(String message, final String type) {
         new AsyncTask<String, Void, Void>() {
             @Override
             protected void onPreExecute() {
@@ -111,12 +119,21 @@ event_error = name + event_error;
             protected Void doInBackground(String... params) {
                 try {
                     String message = params[0];
-                    OutputStreamWriter outputStreamWriter = new OutputStreamWriter(clientSocket.getOutputStream());
-                    BufferedWriter bwriter = new BufferedWriter(outputStreamWriter);                    
-                    bwriter.write(message);
-                    bwriter.flush();
-                    //debug log
-                    Log.d(eTag, "client sent message: " + message);
+                    Log.d(eTag, "TYPED: " + type);
+                    if (type.equals("string")) {
+                        OutputStreamWriter outputStreamWriter = new OutputStreamWriter(clientSocket.getOutputStream());
+                        BufferedWriter bwriter = new BufferedWriter(outputStreamWriter);
+                        bwriter.write(message);
+                        bwriter.flush();
+                        Log.d(eTag, "client sent message: " + message);
+                    } else if (type.equals("base64")) {
+                        byte[] array = Base64.decode(message, Base64.DEFAULT);
+                        clientSocket.getOutputStream().write(array);
+                        clientSocket.getOutputStream().flush();
+
+                        Log.d(eTag, "client sent data: " + message);
+                    }
+                    // debug log
                 } catch (IOException e) {
                     handleIOException(e);
                 }
@@ -156,21 +173,104 @@ event_error = name + event_error;
                         reconnectOnClose = false;
                     }
                 } catch (InterruptedException e) {
-                    //debug log
+                    // debug log
                     Log.e(eTag, "Client InterruptedException", e);
                 }
             }
         }
     }
 
+    /**
+     * Convert a TCP/IP address string into a byte array
+     * 
+     * @param addr String
+     * @return byte[]
+     */
+    private final byte[] asBytes(String addr) {
+
+        // Convert the TCP/IP address string to an integer value
+
+        int ipInt = parseNumericAddress(addr);
+        if (ipInt == 0)
+            return null;
+
+        // Convert to bytes
+
+        byte[] ipByts = new byte[4];
+
+        ipByts[3] = (byte) (ipInt & 0xFF);
+        ipByts[2] = (byte) ((ipInt >> 8) & 0xFF);
+        ipByts[1] = (byte) ((ipInt >> 16) & 0xFF);
+        ipByts[0] = (byte) ((ipInt >> 24) & 0xFF);
+
+        // Return the TCP/IP bytes
+
+        return ipByts;
+    }
+
+    /**
+     * Check if the specified address is a valid numeric TCP/IP address and return
+     * as an integer value
+     * 
+     * @param ipaddr String
+     * @return int
+     */
+    public final int parseNumericAddress(String ipaddr) {
+
+        // Check if the string is valid
+
+        if (ipaddr == null || ipaddr.length() < 7 || ipaddr.length() > 15)
+            return 0;
+
+        // Check the address string, should be n.n.n.n format
+
+        StringTokenizer token = new StringTokenizer(ipaddr, ".");
+        if (token.countTokens() != 4)
+            return 0;
+
+        int ipInt = 0;
+
+        while (token.hasMoreTokens()) {
+
+            // Get the current token and convert to an integer value
+
+            String ipNum = token.nextToken();
+
+            try {
+
+                // Validate the current address part
+
+                int ipVal = Integer.valueOf(ipNum).intValue();
+                if (ipVal < 0 || ipVal > 255)
+                    return 0;
+
+                // Add to the integer address
+
+                ipInt = (ipInt << 8) + ipVal;
+            } catch (NumberFormatException ex) {
+                return 0;
+            }
+        }
+
+        // Return the integer address
+
+        return ipInt;
+    }
+
     private boolean connectSocket() {
         try {
             Log.d(eTag, "Starting new socket: " + dstAddress);
-            InetAddress inetAddress = InetAddress.getByName(dstAddress);
+            InetAddress inetAddress = null;
+            if (type.equals("string"))
+                inetAddress = InetAddress.getByName(dstAddress);
+            else {
+                inetAddress = InetAddress.getByAddress(asBytes(dstAddress));
+            }
 
             clientSocket = new Socket(inetAddress, dstPort, null, 0);
             clientSocket.setSoTimeout(timeout);
             isOpen = true;
+            Log.d(eTag, "New socket started: " + dstAddress);
 
             WritableMap eventParams = Arguments.createMap();
             sendEvent(mReactContext, event_connect, eventParams);
@@ -185,18 +285,35 @@ event_error = name + event_error;
 
     private void watchIncoming() {
         try {
-            InputStreamReader inputStreamReader = new InputStreamReader(clientSocket.getInputStream());
-      BufferedReader breader = new BufferedReader(inputStreamReader);
-      String line = null;
-            while ((line = breader.readLine()) != null) {
-                    //debug log
+            if (type.equals("string")) {
+                InputStreamReader inputStreamReader = new InputStreamReader(clientSocket.getInputStream());
+                BufferedReader breader = new BufferedReader(inputStreamReader);
+                String line = null;
+                while ((line = breader.readLine()) != null) {
+                    // debug log
                     Log.d(eTag, "client received message: " + line);
-                    //emit event
+                    // emit event
                     WritableMap eventParams = Arguments.createMap();
                     eventParams.putString("data", line);
                     sendEvent(mReactContext, event_data, eventParams);
-                    //clear incoming
+                    // clear incoming
                     line = "";
+                }
+            } else {
+                Log.d(eTag, "gonna start reading data");
+                InputStream inputStream = clientSocket.getInputStream();
+                byte[] content = new byte[4096];
+                int bytesRead = -1;
+                while ((bytesRead = inputStream.read(content)) != -1) {
+                    String data = Base64.encodeToString(Arrays.copyOfRange(content, 0, bytesRead), Base64.DEFAULT);
+                    Log.d(eTag, "client received data: " + data);
+                    WritableMap eventParams = Arguments.createMap();
+                    eventParams.putString("data", data);
+                    eventParams.putInt("length", bytesRead);
+                    sendEvent(mReactContext, event_data, eventParams);
+                } // while
+                WritableMap eventParams = Arguments.createMap();
+                sendEvent(mReactContext, event_closed, eventParams);
             }
         } catch (IOException e) {
             handleIOException(e);
@@ -204,9 +321,9 @@ event_error = name + event_error;
     }
 
     private void handleIOException(IOException e) {
-        //debug log
+        // debug log
         Log.e(eTag, "Client IOException", e);
-        //emit event
+        // emit event
         String message = e.getMessage();
         WritableMap eventParams = Arguments.createMap();
         eventParams.putString("error", message);
@@ -219,9 +336,9 @@ event_error = name + event_error;
     }
 
     private void handleUnknownHostException(UnknownHostException e) {
-        //debug log
+        // debug log
         Log.e(eTag, "Client UnknownHostException", e);
-        //emit event
+        // emit event
         String message = e.getMessage();
         WritableMap eventParams = Arguments.createMap();
         eventParams.putString("error", e.getMessage());

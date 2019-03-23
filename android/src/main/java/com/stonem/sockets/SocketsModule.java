@@ -33,6 +33,7 @@ public class SocketsModule extends ReactContextBaseJavaModule {
 
     SocketServer server;
     Map<String, SocketClient> clients = new HashMap<String, SocketClient>();
+
     public SocketsModule(ReactApplicationContext reactContext) {
         super(reactContext);
         mReactContext = reactContext;
@@ -73,10 +74,10 @@ public class SocketsModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void write(String id, String message) {
+    public void write(String id, String message, String type) {
         SocketClient client = clients.get(id);
         if (client != null) {
-            client.write(message);
+            client.write(message, type);
         }
     }
 
@@ -127,7 +128,8 @@ public class SocketsModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-     public void isServerAvailable(String host, int port, int timeOut, Callback successCallback, Callback errorCallback) {
+    public void isServerAvailable(String host, int port, int timeOut, Callback successCallback,
+            Callback errorCallback) {
         final Socket s = new Socket();
         try {
             s.connect(new InetSocketAddress(host, port), timeOut);
@@ -142,7 +144,6 @@ public class SocketsModule extends ReactContextBaseJavaModule {
                 }
         }
     }
-
 
     @Override
     public String getName() {
