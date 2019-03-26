@@ -1,152 +1,405 @@
 package com.stonem.sockets;
 
-import android.util.Log;
-
-import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.Callback;
-import com.facebook.react.bridge.GuardedAsyncTask;
-import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContext;
-import com.facebook.react.bridge.ReactContextBaseJavaModule;
-import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.WritableMap;
 
+import android.util.Log;
+import android.os.AsyncTask;
+import android.support.annotation.Nullable;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.NetworkInterface;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.net.Socket;
-import java.net.SocketException;
-import java.util.Enumeration;
-import java.util.concurrent.ExecutionException;
-import java.util.HashMap;
-import java.util.Map;
+import java.net.InetAddress;
+import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.io.OutputStreamWriter;
+import java.io.BufferedWriter;
+import android.util.Base64;
 
+import java.util.Arrays;
+import java.util.StringTokenizer;
+import java.security.KeyStore;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.TrustManagerFactory;
+import java.security.SecureRandom;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSocket;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.security.cert.Certificate;
+import javax.net.ssl.SSLContext;
+import java.lang.reflect.Field;
+import java.lang.Exception;
+import com.stonem.sockets.HBSSLSocketFactory;
 /**
  * Created by David Stoneham on 2017-08-03.
  */
-public class SocketsModule extends ReactContextBaseJavaModule {
+
+public class SocketClient {
+    public Socket clientSocket;
+
     private final String eTag = "REACT-NATIVE-SOCKETS";
-
+    private String event_closed = "_closed";
+    private String event_data = "_data";
+    private String event_error = "_error";
+    private String event_connect = "_connected";
+    private String dstAddress;
+    private int dstPort;
     private ReactContext mReactContext;
-
-    SocketServer server;
-    Map<String, SocketClient> clients = new HashMap<String, SocketClient>();
-
-    public SocketsModule(ReactApplicationContext reactContext) {
-        super(reactContext);
+    private boolean isOpen = false;
+    private boolean reconnectOnClose = false;
+    private int reconnectDelay = 500;
+    private int maxReconnectAttempts = -1;
+    private int reconnectAttempts = 0;
+    private boolean userDidClose = false;
+    private boolean isFirstConnect = true;
+    private BufferedInputStream bufferedInput;
+    private boolean readingStream = false;
+    private String name = "socketClient";
+    private String type = "string";
+    private int timeout = 0;
+    private final byte EOT = 0x04;
+    private char keystorepass[] = "iamsobad2112".toCharArray();
+    private char keypassword[] = "iamsobad2112".toCharArray();
+    private boolean isSSL=false;
+private HBSSLSocketFactory socketFactory;
+private SSLContext sslContext;
+    SocketClient(ReadableMap params, ReactContext reactContext) {
+        // String addr, int port, boolean autoReconnect
         mReactContext = reactContext;
+        dstAddress = params.getString("address");
+        dstPort = params.getInt("port");
+        if (params.hasKey("reconnect")) {
+            reconnectOnClose = params.getBoolean("reconnect");
+        }
+        if (params.hasKey("isSSL")) {
+            isSSL = params.getBoolean("isSSL");
+        }
+        if (params.hasKey("maxReconnectAttempts")) {
+            maxReconnectAttempts = params.getInt("maxReconnectAttempts");
+        }
+        if (params.hasKey("reconnectDelay")) {
+            reconnectDelay = params.getInt("reconnectDelay");
+        }
+        if (params.hasKey("timeout")) {
+            timeout = params.getInt("timeout");
+        }
+        if (params.hasKey("name")) {
+            name = params.getString("name");
+        }
+        if (params.hasKey("type")) {
+            type = params.getString("type");
+        }
+        event_closed = name + event_closed;
+        event_connect = name + event_connect;
+        event_data = name + event_data;
+        event_error = name + event_error;
+        socketFactory =new HBSSLSocketFactory().trustAllCertificates();
+        
+        Thread socketClientThread = new Thread(new SocketClientThread());
+        socketClientThread.start();
     }
 
-    @Override
-    public void onCatalystInstanceDestroy() {
+    public void disconnect(boolean wasUser) {
         try {
-            new GuardedAsyncTask<Void, Void>(getReactApplicationContext()) {
-                @Override
-                protected void doInBackgroundGuarded(Void... params) {
-                    if (!clients.isEmpty()) {
-                        for (Map.Entry<String, SocketClient> entry : clients.entrySet()) {
-                            entry.getValue().disconnect(false);
-                        }
+            if (getSocket() != null) {
+                userDidClose = wasUser;
+                isOpen = false;
+                getSocket().close();
+                clientSocket = null;
+                sslSocket = null;
+                Log.d(eTag, "client closed");
+            }
+        } catch (IOException e) {
+            handleIOException(e);
+        }
+    }
+
+    private void sendEvent(ReactContext reactContext, String eventName, @Nullable WritableMap params) {
+        reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit(eventName, params);
+    }
+
+    protected void write(String message, final String type) {
+        new AsyncTask<String, Void, Void>() {
+            @Override
+            protected void onPreExecute() {
+                super.onPreExecute();
+            }
+
+            @Override
+            protected Void doInBackground(String... params) {
+                try {
+                    String message = params[0];
+                    Log.d(eTag, "TYPED: " + type);
+                    if (type.equals("string")) {
+                        OutputStreamWriter outputStreamWriter = new OutputStreamWriter(getSocket().getOutputStream());
+                        BufferedWriter bwriter = new BufferedWriter(outputStreamWriter);
+                        bwriter.write(message);
+                        bwriter.flush();
+                        Log.d(eTag, "client sent message: " + message);
+                    } else if (type.equals("base64")) {
+                        byte[] array = Base64.decode(message, Base64.DEFAULT);
+                        getSocket().getOutputStream().write(array);
+                        getSocket().getOutputStream().flush();
+
+                        Log.d(eTag, "client sent data: " + message);
                     }
-                    if (server != null) {
-                        server.close();
-                    }
+                    // debug log
+                } catch (IOException e) {
+                    handleIOException(e);
                 }
-            }.execute().get();
-        } catch (InterruptedException ioe) {
-            Log.e(eTag, "onCatalystInstanceDestroy", ioe);
-        } catch (ExecutionException ee) {
-            Log.e(eTag, "onCatalystInstanceDestroy", ee);
+                return null;
+            }
+
+            protected void onPostExecute(Void dummy) {
+            }
+        }.execute(message);
+    }
+
+    public void onDestroy() {
+        if (getSocket() != null) {
+            try {
+                getSocket().close();
+            } catch (IOException e) {
+                Log.e(eTag, "Client Destroy IOException", e);
+            }
         }
     }
 
-    @ReactMethod
-    public void startServer(int port) {
-        server = new SocketServer(port, mReactContext);
-    }
-
-    @ReactMethod
-    public void startClient(ReadableMap params) {
-        SocketClient client = new SocketClient(params, mReactContext);
-        clients.put(params.getString("name"), client);
-    }
-
-    @ReactMethod
-    public void write(String id, String message, String type) {
-        SocketClient client = clients.get(id);
-        if (client != null) {
-            client.write(message, type);
-        }
-    }
-
-    @ReactMethod
-    public void disconnect(String id) {
-        SocketClient client = clients.get(id);
-        if (client != null) {
-            client.disconnect(true);
-            client = null;
-        }
-    }
-
-    @ReactMethod
-    public void emit(String message, int clientAddr) {
-        if (server != null) {
-            server.write(message, clientAddr);
-        }
-    }
-
-    @ReactMethod
-    public void close() {
-        if (server != null) {
-            server.close();
-            server = null;
-        }
-    }
-
-    @ReactMethod
-    public void getIpAddress(Callback successCallback, Callback errorCallback) {
-        WritableArray ipList = Arguments.createArray();
-        try {
-            Enumeration<NetworkInterface> enumNetworkInterfaces = NetworkInterface.getNetworkInterfaces();
-            while (enumNetworkInterfaces.hasMoreElements()) {
-                NetworkInterface networkInterface = enumNetworkInterfaces.nextElement();
-                Enumeration<InetAddress> enumInetAddress = networkInterface.getInetAddresses();
-                while (enumInetAddress.hasMoreElements()) {
-                    InetAddress inetAddress = enumInetAddress.nextElement();
-                    if (inetAddress.isSiteLocalAddress()) {
-                        ipList.pushString(inetAddress.getHostAddress());
+    private class SocketClientThread extends Thread {
+        @Override
+        public void run() {
+            while (isFirstConnect || (!userDidClose && reconnectOnClose)) {
+                try {
+                    if (connectSocket()) {
+                        watchIncoming();
+                        reconnectAttempts = 0;
+                    } else {
+                        reconnectAttempts++;
                     }
+                    isFirstConnect = false;
+                    if (maxReconnectAttempts == -1 || maxReconnectAttempts < reconnectAttempts) {
+                        Thread.sleep(reconnectDelay);
+                    } else {
+                        reconnectOnClose = false;
+                    }
+                } catch (InterruptedException e) {
+                    // debug log
+                    Log.e(eTag, "Client InterruptedException", e);
                 }
             }
-        } catch (SocketException e) {
-            Log.e(eTag, "getIpAddress SocketException", e);
-            errorCallback.invoke(e.getMessage());
         }
-        successCallback.invoke(ipList);
     }
 
-    @ReactMethod
-    public void isServerAvailable(String host, int port, int timeOut, Callback successCallback,
-            Callback errorCallback) {
-        final Socket s = new Socket();
+    /**
+     * Convert a TCP/IP address string into a byte array
+     * 
+     * @param addr String
+     * @return byte[]
+     */
+    private final byte[] asBytes(String addr) {
+
+        // Convert the TCP/IP address string to an integer value
+
+        int ipInt = parseNumericAddress(addr);
+        if (ipInt == 0)
+            return null;
+
+        // Convert to bytes
+
+        byte[] ipByts = new byte[4];
+
+        ipByts[3] = (byte) (ipInt & 0xFF);
+        ipByts[2] = (byte) ((ipInt >> 8) & 0xFF);
+        ipByts[1] = (byte) ((ipInt >> 16) & 0xFF);
+        ipByts[0] = (byte) ((ipInt >> 24) & 0xFF);
+
+        // Return the TCP/IP bytes
+
+        return ipByts;
+    }
+
+    /**
+     * Check if the specified address is a valid numeric TCP/IP address and return
+     * as an integer value
+     * 
+     * @param ipaddr String
+     * @return int
+     */
+    public final int parseNumericAddress(String ipaddr) {
+
+        // Check if the string is valid
+
+        if (ipaddr == null || ipaddr.length() < 7 || ipaddr.length() > 15)
+            return 0;
+
+        // Check the address string, should be n.n.n.n format
+
+        StringTokenizer token = new StringTokenizer(ipaddr, ".");
+        if (token.countTokens() != 4)
+            return 0;
+
+        int ipInt = 0;
+
+        while (token.hasMoreTokens()) {
+
+            // Get the current token and convert to an integer value
+
+            String ipNum = token.nextToken();
+
+            try {
+
+                // Validate the current address part
+
+                int ipVal = Integer.valueOf(ipNum).intValue();
+                if (ipVal < 0 || ipVal > 255)
+                    return 0;
+
+                // Add to the integer address
+
+                ipInt = (ipInt << 8) + ipVal;
+            } catch (NumberFormatException ex) {
+                return 0;
+            }
+        }
+
+        // Return the integer address
+
+        return ipInt;
+    }
+private SSLSocket sslSocket;
+private boolean connectSSLSocket(){
+    try{
+        Log.d(eTag, "Starting new ssl socket: " + dstAddress);
+            InetAddress inetAddress = null;
+            if (type.equals("string"))
+                inetAddress = InetAddress.getByName(dstAddress);
+            else {
+                inetAddress = InetAddress.getByAddress(asBytes(dstAddress));
+            }
+            sslSocket = (SSLSocket)socketFactory.createSocket(inetAddress, dstPort, null, 0);
+            sslSocket.setSoTimeout(timeout);
+            sslSocket.setUseClientMode(true);
+            Log.d(eTag, "ssl socket started: " + dstAddress);
+            sslSocket.startHandshake();
+            /* SSLSession session = sslSocket.getSession();
+    boolean secured = session.isValid(); */
+    /* Log.d(eTag, "ssl socket securing: " + String.valueOf(secured));
+    if(secured){
+        Log.d(eTag, "ssl socket secured: " + dstAddress);
+ */
+        WritableMap eventParams = Arguments.createMap();
+        sendEvent(mReactContext, event_connect, eventParams);
+    //}
+    return true;
+    }catch(Exception ex){
+        Log.d(eTag, "ssl socket not created: " + ex.toString());
+        return false;
+    }
+}
+private Socket getSocket(){
+    return isSSL ? sslSocket : clientSocket;
+}
+    private boolean connectSocket() {
         try {
-            s.connect(new InetSocketAddress(host, port), timeOut);
-            successCallback.invoke(true);
-        } catch (Exception e) {
-            errorCallback.invoke(e.getMessage());
-        } finally {
-            if (s != null)
-                try {
-                    s.close();
-                } catch (Exception e) {
+            if(isSSL){
+                return connectSSLSocket();
+            }
+            Log.d(eTag, "Starting new socket: " + dstAddress);
+            InetAddress inetAddress = null;
+            if (type.equals("string"))
+                inetAddress = InetAddress.getByName(dstAddress);
+            else {
+                inetAddress = InetAddress.getByAddress(asBytes(dstAddress));
+            }
+
+            clientSocket = new Socket(inetAddress, dstPort, null, 0);
+            clientSocket.setSoTimeout(timeout);
+            isOpen = true;
+            Log.d(eTag, "New socket started: " + dstAddress);
+
+            WritableMap eventParams = Arguments.createMap();
+            sendEvent(mReactContext, event_connect, eventParams);
+            return true;
+        } catch (UnknownHostException e) {
+            handleUnknownHostException(e);
+        } catch (IOException e) {
+            handleIOException(e);
+        }
+        return false;
+    }
+
+    private void watchIncoming() {
+        try {
+            if (type.equals("string")) {
+                InputStreamReader inputStreamReader = new InputStreamReader(getSocket().getInputStream());
+                BufferedReader breader = new BufferedReader(inputStreamReader);
+                String line = null;
+                while ((line = breader.readLine()) != null) {
+                    // debug log
+                    Log.d(eTag, "client received message: " + line);
+                    // emit event
+                    WritableMap eventParams = Arguments.createMap();
+                    eventParams.putString("data", line);
+                    sendEvent(mReactContext, event_data, eventParams);
+                    // clear incoming
+                    line = "";
                 }
+            } else {
+                Log.d(eTag, "gonna start reading data");
+                InputStream inputStream = getSocket().getInputStream();
+                byte[] content = new byte[4096];
+                int bytesRead = -1;
+                while ((bytesRead = inputStream.read(content)) != -1) {
+                    String data = Base64.encodeToString(Arrays.copyOfRange(content, 0, bytesRead), Base64.DEFAULT);
+                    Log.d(eTag, "client received data: " + data);
+                    WritableMap eventParams = Arguments.createMap();
+                    eventParams.putString("data", data);
+                    eventParams.putInt("length", bytesRead);
+                    sendEvent(mReactContext, event_data, eventParams);
+                } // while
+                WritableMap eventParams = Arguments.createMap();
+                sendEvent(mReactContext, event_closed, eventParams);
+            }
+        } catch (IOException e) {
+            handleIOException(e);
         }
     }
 
-    @Override
-    public String getName() {
-        return "Sockets";
+    private void handleIOException(IOException e) {
+        // debug log
+        Log.e(eTag, "Client IOException", e);
+        // emit event
+        String message = e.getMessage();
+        WritableMap eventParams = Arguments.createMap();
+        eventParams.putString("error", message);
+        if (message.equals("Socket closed")) {
+            isOpen = false;
+            sendEvent(mReactContext, event_closed, eventParams);
+        } else {
+            sendEvent(mReactContext, event_error, eventParams);
+        }
     }
+
+    private void handleUnknownHostException(UnknownHostException e) {
+        // debug log
+        Log.e(eTag, "Client UnknownHostException", e);
+        // emit event
+        String message = e.getMessage();
+        WritableMap eventParams = Arguments.createMap();
+        eventParams.putString("error", e.getMessage());
+        sendEvent(mReactContext, event_error, eventParams);
+    }
+
 }
